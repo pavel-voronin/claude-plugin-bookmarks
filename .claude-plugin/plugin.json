@@ -1,0 +1,12 @@
+{
+  "name": "bookmarks",
+  "description": "Claude Code channel plugin for Chrome Bookmarks Gateway. Streams bookmark change events into Claude and exposes bookmark tools over the configured gateway transport.",
+  "version": "0.1.0",
+  "keywords": [
+    "bookmarks",
+    "chrome",
+    "channel",
+    "mcp",
+    "cdp"
+  ]
+}
