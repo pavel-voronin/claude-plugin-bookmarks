@@ -48,9 +48,12 @@ If your gateway doesn't run on the default `ws://127.0.0.1:3000/ws`, add an `env
 
 ```json
 "env": {
-  "BOOKMARKS_GATEWAY_WS_URL": "ws://host:port/ws"
+  "BOOKMARKS_GATEWAY_WS_URL": "ws://host:port/ws",
+  "BOOKMARKS_GATEWAY_SYNCZ_URL": "http://host:port/syncz"
 }
 ```
+
+`BOOKMARKS_GATEWAY_SYNCZ_URL` is optional. If omitted, the plugin derives it from `BOOKMARKS_GATEWAY_WS_URL`.
 
 **3. Start Claude with the channel enabled**
 
@@ -71,10 +74,13 @@ claude --dangerously-load-development-channels server:bookmarks
 - `move_bookmark`
 - `remove_bookmark`
 - `remove_bookmark_tree`
+- `get_sync_status`
 
 ## Inbound event shape
 
 Bookmark events are forwarded with field names matching the official [`chrome.bookmarks` API](https://developer.chrome.com/docs/extensions/reference/api/bookmarks) event signatures.
+
+Gateway sync state changes are also forwarded as `system.syncStatusChanged`.
 
 Concrete example for `onCreated` when the created node is a regular bookmark:
 
@@ -99,7 +105,23 @@ Concrete example for `onCreated` when the created node is a regular bookmark:
 </channel>
 ```
 
+Concrete example for a sync outage notification:
+
+```
+<channel source="bookmarks">
+{
+  "event": "system.syncStatusChanged",
+  "data": {
+    "status": {
+      "ok": false
+    }
+  }
+}
+</channel>
+```
+
 ## Notes
 
 - This server intentionally uses the Channels contract for inbound notifications and normal MCP tools for bookmark operations.
+- `get_sync_status` checks the gateway `/syncz` endpoint and returns the HTTP status plus the parsed response body.
 - It does not implement a chat-style `reply` tool because the gateway is an event source, not a human messaging surface.

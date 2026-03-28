@@ -51,6 +51,7 @@ type RpcResponse = JsonRpcSuccess | JsonRpcError;
 type EnvConfig = {
   transport: TransportMode;
   wsUrl: string;
+  synczUrl: string;
   authToken?: string;
 };
 
@@ -74,14 +75,26 @@ function requiredUrl(name: string, fallback: string): string {
   return new URL(value).toString();
 }
 
+function toHttpUrl(wsUrl: string, pathname: string): string {
+  const url = new URL(wsUrl);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  url.pathname = pathname;
+  url.search = "";
+  return url.toString();
+}
+
 function readConfig(): EnvConfig {
   const transport = process.env.BOOKMARKS_GATEWAY_TRANSPORT ?? "ws";
   if (transport !== "ws") {
     throw new Error(`BOOKMARKS_GATEWAY_TRANSPORT must be ws; got ${transport}`);
   }
+  const wsUrl = requiredUrl("BOOKMARKS_GATEWAY_WS_URL", "ws://127.0.0.1:3000/ws");
   return {
     transport: "ws",
-    wsUrl: requiredUrl("BOOKMARKS_GATEWAY_WS_URL", "ws://127.0.0.1:3000/ws"),
+    wsUrl,
+    synczUrl:
+      process.env.BOOKMARKS_GATEWAY_SYNCZ_URL ??
+      toHttpUrl(wsUrl, "/syncz"),
     authToken: process.env.BOOKMARKS_GATEWAY_AUTH_TOKEN || undefined,
   };
 }
@@ -94,6 +107,10 @@ function isJsonRpcError(value: unknown): value is JsonRpcError {
 // signatures so Claude sees stable, documented names instead of positional args.
 function normalizeEventData(event: string, args: unknown[] = []): unknown {
   switch (event) {
+    case "system.syncStatusChanged":
+      return {
+        status: args[0],
+      };
     case "onCreated":
       return {
         id: args[0],
@@ -158,6 +175,27 @@ class GatewayBridge {
 
   async call(method: string, params: unknown[]): Promise<unknown> {
     return this.callViaWs(method, params);
+  }
+
+  async getSyncStatus(): Promise<unknown> {
+    const response = await fetch(this.config.synczUrl, {
+      method: "GET",
+      headers: this.config.authToken
+        ? { Authorization: `Bearer ${this.config.authToken}` }
+        : undefined,
+    });
+
+    let body: unknown = null;
+    try {
+      body = await response.json();
+    } catch {}
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      synczUrl: this.config.synczUrl,
+      body,
+    };
   }
 
   private scheduleReconnect(reason: string): void {
@@ -273,7 +311,7 @@ class GatewayBridge {
 }
 
 const server = new Server(
-  { name: "bookmarks", version: "0.1.0" },
+  { name: "bookmarks", version: "0.2.0" },
   {
     capabilities: {
       tools: {},
@@ -285,10 +323,11 @@ const server = new Server(
       "This plugin bridges Chrome Bookmarks Gateway into Claude Code.",
       "",
       "Bookmark change events arrive as <channel> blocks whose body is a JSON object with event and data fields.",
+      "Sync status changes also arrive as channel events with event=system.syncStatusChanged and data.status.ok indicating whether synced bookmarks are currently reachable.",
       "Those channel blocks are notifications from the gateway, not direct user chat messages.",
       "",
       "Use the bookmark tools to inspect or mutate bookmarks:",
-      "get_tree, get_subtree, get_children, get_recent, get_bookmarks, search_bookmarks, create_bookmark, update_bookmark, move_bookmark, remove_bookmark, remove_bookmark_tree.",
+      "get_tree, get_subtree, get_children, get_recent, get_bookmarks, search_bookmarks, create_bookmark, update_bookmark, move_bookmark, remove_bookmark, remove_bookmark_tree, get_sync_status.",
       "",
       "If you react to an inbound bookmark event, perform the needed bookmark operations through tools. Writing plain transcript text does not send anything back to the gateway.",
       "",
@@ -441,6 +480,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["id"],
       },
     },
+    {
+      name: "get_sync_status",
+      description: "Check the gateway /syncz endpoint for the current bookmark sync status.",
+      inputSchema: { type: "object", properties: {} },
+    },
   ],
 }));
 
@@ -474,6 +518,8 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       return toolResult(await bridge.call("remove", [requireString(args.id, "id")]));
     case "remove_bookmark_tree":
       return toolResult(await bridge.call("removeTree", [requireString(args.id, "id")]));
+    case "get_sync_status":
+      return toolResult(await bridge.getSyncStatus());
     default:
       throw new Error(`unknown tool: ${req.params.name}`);
   }
